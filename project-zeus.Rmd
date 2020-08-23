@@ -1,0 +1,161 @@
+---
+title: "Project Zeus"
+author: "James Baird"
+date: "23/08/2020"
+output:
+  html_document:
+    code_folding: hide
+    df_print: kable
+  pdf_document: default
+---
+
+```{r setup, include=FALSE}
+library(tidyverse)
+library(ggplot2)
+library(ggthemes)
+library(visNetwork)
+
+episodes <- read_csv('episodes.csv', col_names = c('Season', 'Episode', 'Title', 'Rating', 'Year')) %>%
+  arrange(Season, Episode) %>%
+  mutate(EpisodeSeq = row_number())
+cast <- read_csv('cast.csv', col_names = c('Season', 'Episode', 'Name', 'Character'))
+
+joined <- inner_join(cast, episodes)
+
+theme_set(theme_economist())
+default_fill <- economist_pal()(1)
+```
+
+# Ratings
+## Episode Ratings {.tabset}
+### Best Episodes
+```{r}
+episodes %>%
+  select(-Year) %>%
+  arrange(-Rating) %>% 
+  slice_head(n=5)
+```
+
+### Worst Episodes
+```{r}
+episodes %>%
+  select(-Year) %>%
+  arrange(Rating) %>%
+  slice_head(n=5)
+```
+
+## Average Episode Ratings {.tabset}
+
+### By Season
+```{r}
+episodes %>%
+  group_by(Season) %>%
+  summarise(Rating = mean(Rating), .groups = 'drop') %>%
+  mutate(Season = as.factor(Season)) %>%
+  ggplot(aes(Season, Rating)) +
+  geom_col(fill=default_fill) +
+  scale_y_continuous(limits = c(0,10)) +
+  labs(title = "Mean Peep Show episode rating by season", caption = "Source: IMDB")
+```
+
+### By Episode Number
+```{r}
+episodes %>%
+  group_by(Episode) %>%
+  summarise(Rating = mean(Rating), .groups = 'drop') %>%
+  mutate(Episode = as.factor(Episode)) %>%
+  ggplot(aes(Episode, Rating)) +
+  geom_col(fill=default_fill) +
+  scale_y_continuous(limits = c(0,10)) +
+  labs(title = "Mean Peep Show episode rating by episode number", caption = "Source: IMDB", x = "Episode Number") +
+  scale_fill_economist()
+```
+
+# Characters
+
+## Appearances {.tabset}
+
+### Episode Count
+```{r}
+cast %>%
+  group_by(Character) %>%
+  filter(n() >= 5) %>%
+  summarise(Appearances = n(), .groups = 'drop') %>%
+  mutate(Character = fct_reorder(Character, Appearances, .desc = TRUE)) %>%
+  ggplot(aes(Character, Appearances)) +
+  geom_col(fill = default_fill) +
+  labs(title = "Number of Peep Show episodes appeared in", subtitle = "Minimum 5 episodes") +
+  theme(axis.text.x = element_text(angle = 45, vjust=1, hjust=1)) +
+  scale_y_continuous(breaks = seq(0, 55, by = 10), limits = c(0, 55))
+```
+
+### Timeline
+```{r}
+joined %>%
+  group_by(Character) %>% 
+  filter(n() >= 5)%>% 
+  group_by(EpisodeSeq) %>%
+  mutate(Character = fct_reorder(Character, EpisodeSeq, min)) %>%
+  ggplot(aes(EpisodeSeq, Character)) + 
+  geom_tile(height = 0.3, fill = economist_pal()(1)) + 
+  scale_x_continuous(breaks = seq(0, 54, 6)) +
+  labs(title = "Character episode timeline", y = NULL, subtitle = "Minimum 5 episodes")
+```
+
+## Ratings
+```{r}
+joined %>%
+  group_by(Character) %>%
+  filter(n() >= 5) %>%
+  summarise(Rating = mean(Rating), .groups = 'drop') %>%
+  mutate(Character = fct_reorder(Character, Rating, .desc = TRUE)) %>%
+  ggplot(aes(Character, Rating)) +
+  geom_col(fill = default_fill) +
+  scale_y_continuous(limits = c(0,10), breaks=seq(0,10,1)) +
+  labs(title = "Mean episode rating with character appearing", subtitle = "Minimum 5 episodes") +
+  theme(axis.text.x = element_text(angle = 45, hjust=1, vjust=1))
+```
+
+## Modelling based on who appears in an episode
+This selects all characters who appear in at least 5 episodes, then builds a regression model with the episode rating as the outcome based on whether the character appears in the episode. Does it produce anything useful? No. The most interesting observation is that Ian Chapman appears to have a strong influence on an episode's rating.
+```{r}
+joined %>%
+  select(Season, Episode, Character, Rating) %>%
+  group_by(Character) %>%
+  filter(n() >= 5) %>%
+  ungroup() %>%
+  mutate(Appearance = TRUE) %>%
+  pivot_wider(names_from = Character, values_from = Appearance, values_fill = list(Appearance = FALSE)) %>%
+  select(-Season, -Episode) %>%
+  lm(Rating ~ ., data = .) %>%
+  summary()
+```
+Ian appears in these episodes
+```{r}
+joined %>%
+  filter(Character == "Ian Chapman") %>%
+  select(Season, Episode, Title, Rating) %>%
+  arrange(Season, Episode)
+```
+
+# Network
+```{r}
+cast %>%
+  group_by(Character) %>%
+  summarise(value = n()) %>%
+  filter(value >= 5, value < 54) %>%
+  select(id = Character, label = Character, value) -> nodes
+
+cast %>%
+  inner_join(cast, by = c("Season" = "Season", "Episode" = "Episode")) %>%
+  filter(Character.x > Character.y) %>%
+  select(from = Character.x, to = Character.y) %>%
+  group_by(from, to) %>%
+  summarise(value = n()) -> edges
+
+visNetwork(nodes, edges, main = "Peep Show characters appearing in the same episode", submain = "Minimum 5 appearances. Excluding Mark and Jeremy") %>%
+  visInteraction(hoverConnectedEdges = FALSE, hideEdgesOnDrag = TRUE) %>%
+  visNodes(shape = "box") %>%
+  visEdges(color = list("highlight" = "red"))
+```
+
